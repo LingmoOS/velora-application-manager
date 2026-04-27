@@ -1,0 +1,23 @@
+# SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
+#
+# SPDX-License-Identifier: LGPL-3.0-or-later
+
+[Unit]
+Description=Deepin Application Manager
+StartLimitBurst=3
+CollectMode=inactive-or-failed
+
+Requisite=dde-session-pre.target
+After=dde-session-pre.target
+
+PartOf=dde-session-core.target
+Before=dde-session-core.target
+
+[Service]
+Type=dbus
+BusName=org.desktopspec.ApplicationManager1
+ExecStart=@CMAKE_INSTALL_FULL_BINDIR@/dde-application-manager
+Environment=QT_LOGGING_RULES="*.debug=false"
+Slice=session.slice
+Restart=always
+RestartSec=500ms

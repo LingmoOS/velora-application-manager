@@ -1,0 +1,389 @@
+// SPDX-FileCopyrightText: 2023 - 2026 UnionTech Software Technology Co., Ltd.
+//
+// SPDX-License-Identifier: LGPL-3.0-or-later
+
+#include "desktopentry.h"
+#include "desktopfileparser.h"
+#include <QDir>
+#include <QDirIterator>
+#include <QFileInfo>
+#include <QLoggingCategory>
+#include <QRegularExpression>
+#include <QStringView>
+#include <QVariant>
+#include <algorithm>
+
+Q_LOGGING_CATEGORY(logDesktopEntry, "am.desktopentry")
+
+QString DesktopFile::sourcePath() const noexcept
+{
+    if (!m_fileSource) {
+        return "";
+    }
+
+    QFileInfo info(*m_fileSource);
+    return info.absoluteFilePath();
+}
+
+bool DesktopEntry::checkMainEntryValidation() const noexcept
+{
+    auto it = m_entryMap.find(DesktopFileEntryKey);
+    if (it == m_entryMap.end()) {
+        return false;
+    }
+
+    if (auto name = it->find("Name"); name == it->end()) {
+        qCWarning(logDesktopEntry) << "No Name entry";
+        return false;
+    }
+
+    auto type = it->find("Type");
+    if (type == it->end()) {
+        qCWarning(logDesktopEntry) << "No Type entry";
+        for (auto tmp = it->constKeyValueBegin(); tmp != it->constKeyValueEnd(); ++tmp) {
+            const auto &[k, v] = *tmp;
+            qCDebug(logDesktopEntry) << "key:" << k << "value:" << v;
+        }
+        return false;
+    }
+
+    const auto &typeStr = type->toString();
+    if (typeStr.isEmpty()) {
+        return false;
+    }
+    if (typeStr == "Link") {
+        if (!it->contains("URL")) {
+            return false;
+        }
+    }
+
+    return true;
+}
+
+std::optional<DesktopFile> DesktopFile::createTemporaryDesktopFile(std::unique_ptr<QFile> temporaryFile) noexcept
+{
+    auto [ctime, mtime, _] = getFileTimeInfo(QFileInfo{*temporaryFile});
+    if (mtime == 0) {
+        qCWarning(logDesktopEntry) << "create temporary file failed.";
+        return std::nullopt;
+    }
+    return DesktopFile{std::move(temporaryFile), "", mtime, ctime};
+}
+
+std::optional<DesktopFile> DesktopFile::createTemporaryDesktopFile(const QString &temporaryFile) noexcept
+{
+    const static QString userTmp = QString{"/run/user/%1/"}.arg(getCurrentUID());
+    auto tempFile = std::make_unique<QFile>(QString{userTmp + QUuid::createUuid().toString(QUuid::Id128) + ".desktop"});
+
+    if (!tempFile->open(QFile::NewOnly | QFile::WriteOnly | QFile::Text)) {
+        qCWarning(logDesktopEntry) << "failed to create temporary desktop file:" << QFileInfo{*tempFile}.absoluteFilePath()
+                                   << tempFile->errorString();
+        return std::nullopt;
+    }
+
+    auto content = temporaryFile.toLocal8Bit();
+    auto writeByte = tempFile->write(content);
+
+    if (writeByte == -1 || writeByte != content.length()) {
+        qCWarning(logDesktopEntry) << "write to temporary file failed:" << tempFile->errorString();
+        return std::nullopt;
+    }
+
+    tempFile->close();
+
+    return createTemporaryDesktopFile(std::move(tempFile));
+}
+
+std::optional<DesktopFile> DesktopFile::searchDesktopFileByPath(const QString &desktopFile, ParserError &err) noexcept
+{
+    using namespace Qt::StringLiterals;
+    constexpr auto desktopSuffixLen = 8;  // ".desktop" length
+    const QStringView pathView{desktopFile};
+
+    if (!pathView.endsWith(u".desktop")) {
+        qCWarning(logDesktopEntry) << "file isn't a desktop file:" << pathView;
+        err = ParserError::MismatchedFile;
+        return std::nullopt;
+    }
+
+    const QFileInfo fileinfo{desktopFile};
+    if (!fileinfo.isAbsolute() || !fileinfo.exists()) {
+        qCWarning(logDesktopEntry) << "desktop file not found.";
+        err = ParserError::NotFound;
+        return std::nullopt;
+    }
+
+    // Extract desktop ID from path: .../applications/subdir/app.desktop -> subdir-app
+    const auto base = pathView.chopped(desktopSuffixLen);
+    const auto components = base.split(QDir::separator(), Qt::SkipEmptyParts);
+
+    auto appIt = std::find(components.cbegin(), components.cend(), u"applications");
+    auto autostartIt = std::find(components.cbegin(), components.cend(), u"autostart");
+
+    QString id;
+    if (auto it = (appIt != components.cend()) ? appIt : autostartIt; it != components.cend()) {
+        for (auto next = std::next(it); next != components.cend(); ++next) {
+            if (!id.isEmpty()) {
+                id.append(u'-');
+            }
+
+            id.append(*next);
+        }
+    }
+
+    auto filePtr = std::make_unique<QFile>(desktopFile);
+    auto [ctime, mtime, _] = getFileTimeInfo(QFileInfo{*filePtr});
+
+    err = ParserError::NoError;
+    return DesktopFile{std::move(filePtr), std::move(id), mtime, ctime};
+}
+
+std::optional<DesktopFile> DesktopFile::searchDesktopFileById(const QString &appId, ParserError &err) noexcept
+{
+    auto appDirs = getApplicationsDirs();
+
+    using namespace Qt::StringLiterals;
+    for (const auto &dir : std::as_const(appDirs)) {
+        auto app = QFileInfo{dir % QDir::separator() % appId % ".desktop"_L1};
+        while (!app.exists()) {
+            auto filePath = app.absoluteFilePath();
+            auto hyphenIndex = filePath.indexOf(u'-');
+            if (hyphenIndex == -1) {
+                break;
+            }
+            filePath.replace(hyphenIndex, 1, QDir::separator());
+            app.setFile(filePath);
+        }
+
+        if (app.exists()) {
+            return searchDesktopFileByPath(app.absoluteFilePath(), err);
+        }
+    }
+
+    err = ParserError::NotFound;
+    return std::nullopt;
+}
+
+bool DesktopFile::modified(qint64 time) const noexcept
+{
+    return time != m_mtime;
+}
+
+ParserError DesktopEntry::parse(const DesktopFile &file) noexcept
+{
+    DesktopFileGuard guard{file};
+
+    if (!guard.try_open()) {
+        qCWarning(logDesktopEntry) << file.sourcePath() << "can't open.";
+        return ParserError::OpenFailed;
+    }
+
+    QTextStream stream;
+    stream.setDevice(file.sourceFile());
+    return parse(stream);
+}
+
+ParserError DesktopEntry::parse(QTextStream &stream) noexcept
+{
+    if (m_parsed) {
+        return ParserError::Parsed;
+    }
+
+    if (stream.atEnd()) {
+        return ParserError::OpenFailed;
+    }
+
+    stream.setEncoding(QStringConverter::Utf8);
+
+    ParserError err{ParserError::NoError};
+    DesktopFileParser p(stream);
+    err = p.parse(m_entryMap);
+    m_parsed = true;
+    if (err != ParserError::NoError) {
+        return err;
+    }
+
+    if (!checkMainEntryValidation()) {
+        qCWarning(logDesktopEntry) << "invalid MainEntry, abort.";
+        err = ParserError::MissingInfo;
+    }
+
+    return err;
+}
+
+std::optional<QMap<QString, DesktopEntry::Value>> DesktopEntry::group(const QString &key) const noexcept
+{
+    if (auto group = m_entryMap.find(key); group != m_entryMap.cend()) {
+        return *group;
+    }
+    return std::nullopt;
+}
+
+std::optional<DesktopEntry::Value> DesktopEntry::value(const QString &groupKey, const QString &valueKey) const noexcept
+{
+    const auto &destGroup = group(groupKey);
+    if (!destGroup) {
+        qCDebug(logDesktopEntry) << "group " << groupKey << " can't be found.";
+        return std::nullopt;
+    }
+
+    auto it = destGroup->find(valueKey);
+    if (it == destGroup->cend()) {
+        qCDebug(logDesktopEntry) << "value " << valueKey << " can't be found.";
+        return std::nullopt;
+    }
+    return *it;
+}
+
+void DesktopEntry::insert(const QString &key, const QString &valueKey, Value &&val) noexcept
+{
+    auto outer = m_entryMap.find(key);
+    if (outer == m_entryMap.end()) {
+        outer = m_entryMap.insert(key, {});
+    }
+
+    outer->insert(valueKey, val);
+}
+
+QString unescapeValue(QStringView str) noexcept
+{
+    QString out;
+    out.reserve(str.size());
+
+    for (const auto *it = str.begin(); it != str.end(); ++it) {
+        if (*it == u'\\' && (it + 1) != str.end()) {
+            const auto next = (*(++it)).unicode();
+            switch (next) {
+            case 's':
+                out.append(u' ');
+                break;
+            case 'n':
+                out.append(u'\n');
+                break;
+            case 't':
+                out.append(u'\t');
+                break;
+            case 'r':
+                out.append(u'\r');
+                break;
+            case '\\':
+                out.append(u'\\');
+                break;
+            case ';':
+                out.append(u';');
+                break;
+            default:
+                out.append(u'\\');
+                out.append(next);
+                break;
+            }
+        } else {
+            out.append(*it);
+        }
+    }
+
+    return out;
+}
+
+QString toString(const DesktopEntry::Value &value) noexcept
+{
+    QString str;
+
+    if (value.canConvert<QStringMap>()) {  // get default locale
+        str = value.value<QStringMap>()[DesktopFileDefaultKeyLocale];
+    } else {
+        str = value.toString();
+    }
+
+    if (str.isEmpty()) {
+        qCWarning(logDesktopEntry) << "failed to convert value to string.";
+        return {};
+    }
+
+    auto unescapedStr = unescapeValue(str);
+
+    if (hasNonAsciiAndControlCharacters(unescapedStr)) {
+        return {};
+    }
+
+    return unescapedStr;
+}
+
+QString toLocaleString(const QStringMap &localeMap, const QLocale &locale) noexcept
+{
+    for (auto it = localeMap.constKeyValueBegin(); it != localeMap.constKeyValueEnd(); ++it) {
+        auto [a, b] = *it;
+        if (QLocale{a}.name() == locale.name()) {
+            return unescapeValue(b);
+        }
+    }
+
+    return toString(localeMap[DesktopFileDefaultKeyLocale]);
+}
+
+QString toIconString(const DesktopEntry::Value &value) noexcept
+{
+    return toString(value);
+}
+
+bool toBoolean(const DesktopEntry::Value &value, bool &ok) noexcept
+{
+    ok = false;
+    const auto &str = toString(value);
+    if (str == "true") {
+        ok = true;
+        return true;
+    }
+
+    if (str == "false") {
+        ok = true;
+        return false;
+    }
+
+    return false;
+}
+
+float toNumeric(const DesktopEntry::Value &value, bool &ok) noexcept
+{
+    return value.toFloat(&ok);
+}
+
+bool operator==(const DesktopEntry &lhs, const DesktopEntry &rhs)
+{
+    if (lhs.m_parsed != rhs.m_parsed) {
+        return false;
+    }
+
+    if (lhs.m_entryMap != rhs.m_entryMap) {
+        return false;
+    }
+
+    return true;
+}
+
+bool operator!=(const DesktopEntry &lhs, const DesktopEntry &rhs)
+{
+    return !(lhs == rhs);
+}
+
+bool operator==(const DesktopFile &lhs, const DesktopFile &rhs)
+{
+    if (lhs.m_desktopId != rhs.m_desktopId) {
+        return false;
+    }
+
+    if (lhs.sourcePath() != rhs.sourcePath()) {
+        return false;
+    }
+
+    if (lhs.m_ctime != rhs.m_ctime or lhs.m_mtime != rhs.m_mtime) {
+        return false;
+    }
+
+    return true;
+}
+
+bool operator!=(const DesktopFile &lhs, const DesktopFile &rhs)
+{
+    return !(lhs == rhs);
+}
