@@ -1,4 +1,4 @@
-Source: velora-application-manager
+Source: lingmo-application-manager
 Section: utils
 Priority: optional
 Maintainer: Lingmo OS Team <team@lingmo.org>
@@ -15,16 +15,16 @@ Build-Depends: debhelper-compat ( =12), cmake,
  qt6-wayland-private-dev,
  libxkbcommon-dev,
 Standards-Version: 4.5.0
-Homepage: https://github.com/LingmoOS/velora-application-manager
+Homepage: https://github.com/LingmoOS/lingmo-application-manager
 
-Package: dde-application-manager
+Package: lingmo-application-manager
 Architecture: any
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Description:  Application manager for DDE.
   Launch applications by systemd for more caps.
 
-Package: dde-application-manager-api
+Package: lingmo-application-manager-api
 Architecture: any
-Depends: dde-application-manager( =${binary:Version}), ${misc:Depends}
+Depends: lingmo-application-manager( =${binary:Version}), ${misc:Depends}
 Description: DBus Interface of dde-application-manager.
   For the convenience of developers who want to use dde-application-manager.

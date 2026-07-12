@@ -19,7 +19,7 @@ private:
 
 TEST_F(TestJobManager, addJob)
 {
-    QDBusObjectPath sourcePath{"/org/deepin/Test1"};
+    QDBusObjectPath sourcePath{"/org/lingmo/Test1"};
     QVariantList args{{"Application"}, {"Application"}, {"Application"}, {"Application"}};
     auto &manager = service();
     QDBusObjectPath jobPath;
