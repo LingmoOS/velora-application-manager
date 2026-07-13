@@ -68,7 +68,7 @@ install(FILES ${DBUS_APPLICATION_MANAGER_SERVICE_FILE}
 install(FILES ${CMAKE_CURRENT_LIST_DIR}/dpkg/dpkg.cfg.d/am-update-hook
     DESTINATION ${CMAKE_INSTALL_SYSCONFDIR}/dpkg/dpkg.cfg.d)
 
-set(HOOKS_DEST_DIR ${CMAKE_INSTALL_DATADIR}/deepin/dde-application-manager/hooks.d)
+set(HOOKS_DEST_DIR ${CMAKE_INSTALL_DATADIR}/lingmo/lingmo-application-manager/hooks.d)
 configure_file(
     hooks.d/2-debFix.json.in
     hooks.d/2-debFix.json

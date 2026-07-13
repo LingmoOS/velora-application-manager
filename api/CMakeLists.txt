@@ -8,7 +8,7 @@ configure_file(
     @ONLY)
 
 install(FILES ${DBusAPI}
-    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/dde-application-manager/)
+    DESTINATION ${CMAKE_INSTALL_DATAROOTDIR}/lingmo-application-manager/)
 
 install(FILES ${CMAKE_CURRENT_BINARY_DIR}/DDEApplicationManagerConfig.cmake
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/DDEApplicationManager/)

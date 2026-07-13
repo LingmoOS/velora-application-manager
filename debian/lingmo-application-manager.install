@@ -4,5 +4,5 @@ usr/lib/systemd/*
 usr/libexec/*
 usr/share/dbus-1/*
 usr/share/dsg/*
-usr/share/deepin/lingmo-application-manager/hooks.d/*
+usr/share/lingmo/lingmo-application-manager/hooks.d/*
 usr/share/bash-completion/completions/*
